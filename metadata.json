@@ -1,5 +1,5 @@
 {
-  "name": "Sistema de Controle de Bonificações",
+  "name": "Sistema de Controle de Bonificações ERP",
   "description": "Uma plataforma avançada para extrair dados de vendas de relatórios ERP, calcular bonificações de vendedores e gerenciar o histórico de pagamentos utilizando inteligência artificial.",
   "requestFramePermissions": [
     "camera"
