@@ -13,9 +13,10 @@ export interface ProductQuantity {
 }
 
 export interface SellerBonusSummary {
-  vendedor: string;
-  qtdePorBonus: Record<number, number>; // value -> quantity
-  vendasPorProduto: ProductQuantity[]; // description -> quantity
+  codigoVendedor: string;
+  vendedor: string; // Nome do vendedor
+  qtdePorBonus: Record<number, number>; // valor -> quantidade
+  vendasPorProduto: ProductQuantity[]; // descrição -> quantidade
   totalBonificacao: number;
 }
 

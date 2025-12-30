@@ -4,10 +4,16 @@ import { BonusProduct, SellerBonusSummary } from "../types";
 
 export async function processSalesReport(
   file: File,
-  activeProducts: BonusProduct[]
+  activeProducts: BonusProduct[],
+  manualKey?: string
 ): Promise<SellerBonusSummary[]> {
-  // Use gemini-3-pro-preview for complex extraction tasks as per guidelines
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  const apiKey = manualKey || process.env.API_KEY;
+  
+  if (!apiKey) {
+    throw new Error("API Key não configurada.");
+  }
+
+  const ai = new GoogleGenAI({ apiKey });
 
   const base64Data = await new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
@@ -28,27 +34,27 @@ export async function processSalesReport(
   ).join('\n');
 
   const prompt = `
-    Analise este relatório de vendas do ERP.
+    Analise este relatório de vendas da Cerealista Sorocaba.
     
-    LISTA DE PRODUTOS BONIFICADOS (CONTEXTO):
+    LISTA DE PRODUTOS BONIFICADOS:
     ${productContext}
 
-    REGRAS DE EXTRAÇÃO:
-    1. Identifique os vendedores. O nome aparece após "Vendedor: [ID] - ".
-    2. Localize as vendas dos produtos da lista acima para cada vendedor.
-    3. ATENÇÃO À QUANTIDADE: No relatório, "1.000" significa 1 unidade, "2.000" significa 2 unidades. Ignore os zeros após o ponto se houver 3 casas decimais.
-    4. Para cada vendedor, extraia:
-       - Nome do vendedor.
-       - Lista de produtos bonificados vendidos com suas respectivas descrições e quantidades.
-       - Agrupamento das quantidades totais por valor unitário de bonificação.
-       - Valor total de bonificação calculado (Soma de: Quantidade * Valor do Bônus).
+    REGRAS CRÍTICAS DE EXTRAÇÃO:
+    1. IDENTIFICAÇÃO DO VENDEDOR: Localize a linha que começa com "Vendedor:". 
+       - O formato é sempre "Vendedor: [CÓDIGO] - [NOME]".
+       - Extraia o CÓDIGO (ex: 19, 27, 41) e o NOME (ex: MAYARA ALVES...) separadamente.
+       - Se encontrar um vendedor sem código, atribua "0" ao código.
+    2. Localize as vendas dos produtos da lista mencionada acima.
+    3. TRATAMENTO DE QUANTIDADE: No relatório, o ponto é separador de milhar com 3 casas decimais (Ex: "1.000" = 1 unidade, "2.000" = 2 unidades). Extraia o valor INTEIRO real vendido.
+    4. Ignore produtos que não estão na lista de contexto acima.
+    5. Calcule a bonificação: (Quantidade Total Vendida de cada produto * Valor do Bônus correspondente).
 
-    Retorne um JSON contendo uma lista de vendedores com seus respectivos dados de bônus e detalhamento por produto.
+    Retorne um JSON estruturado com os dados extraídos, agrupando por CÓDIGO de vendedor.
   `;
 
   try {
     const response = await ai.models.generateContent({
-      model: 'gemini-3-pro-preview',
+      model: 'gemini-3-flash-preview',
       contents: {
         parts: [
           { inlineData: { data: base64Data, mimeType: file.type } },
@@ -62,7 +68,8 @@ export async function processSalesReport(
           items: {
             type: Type.OBJECT,
             properties: {
-              vendedor: { type: Type.STRING },
+              codigoVendedor: { type: Type.STRING },
+              vendedor: { type: Type.STRING, description: "Nome do vendedor" },
               vendasPorProduto: {
                 type: Type.ARRAY,
                 items: {
@@ -76,7 +83,6 @@ export async function processSalesReport(
               },
               detalhamentoBonificacao: { 
                 type: Type.ARRAY,
-                description: "Agrupamento por valor da bonificação",
                 items: {
                   type: Type.OBJECT,
                   properties: {
@@ -88,7 +94,7 @@ export async function processSalesReport(
               },
               totalBonificacao: { type: Type.NUMBER }
             },
-            required: ["vendedor", "vendasPorProduto", "detalhamentoBonificacao", "totalBonificacao"]
+            required: ["codigoVendedor", "vendedor", "vendasPorProduto", "detalhamentoBonificacao", "totalBonificacao"]
           }
         }
       }
@@ -99,7 +105,6 @@ export async function processSalesReport(
     
     const rawData = JSON.parse(text);
     
-    // Process results with type safety
     return rawData.map((item: any) => {
       const qtdePorBonus: Record<number, number> = {};
       if (Array.isArray(item.detalhamentoBonificacao)) {
@@ -111,17 +116,18 @@ export async function processSalesReport(
         });
       }
       return {
-        vendedor: String(item.vendedor || 'VENDEDOR DESCONHECIDO'),
+        codigoVendedor: String(item.codigoVendedor || '0'),
+        vendedor: String(item.vendedor || 'DESCONHECIDO').toUpperCase(),
         qtdePorBonus,
         vendasPorProduto: (item.vendasPorProduto || []).map((p: any) => ({
-          descricao: String(p.descricao || ''),
+          descricao: String(p.descricao || '').toUpperCase(),
           quantidade: Number(p.quantidade || 0)
         })),
         totalBonificacao: Number(item.totalBonificacao || 0)
       };
     });
   } catch (error) {
-    console.error("Erro ao processar com Gemini:", error);
+    console.error("Erro Gemini:", error);
     throw error;
   }
 }

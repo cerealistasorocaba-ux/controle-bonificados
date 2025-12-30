@@ -1,6 +1,6 @@
 {
-  "name": "Sistema de Controle de Bonificações ERP",
-  "description": "Uma plataforma avançada para extrair dados de vendas de relatórios ERP, calcular bonificações de vendedores e gerenciar o histórico de pagamentos utilizando inteligência artificial.",
+  "name": "ERP Bonus - Sistema de Controle",
+  "description": "Sistema de inteligência artificial para extração e controle de bonificações de vendas da Cerealista Sorocaba.",
   "requestFramePermissions": [
     "camera"
   ]

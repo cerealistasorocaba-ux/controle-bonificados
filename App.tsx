@@ -9,14 +9,18 @@ import {
   CheckCircle2, 
   AlertCircle, 
   Loader2,
-  ChevronRight,
   TrendingUp,
   Users,
   DollarSign,
   FileSearch,
   History,
   LayoutGrid,
-  ClipboardList
+  ClipboardList,
+  Key,
+  ExternalLink,
+  LineChart,
+  Save,
+  Check
 } from 'lucide-react';
 import { 
   BonusProduct, 
@@ -28,6 +32,12 @@ import { INITIAL_PRODUCTS, TABS } from './constants';
 import { processSalesReport } from './services/geminiService';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 
+const LogoERP = () => (
+  <div className="w-10 h-10 bg-indigo-600 rounded-lg flex items-center justify-center shadow-lg shadow-indigo-200">
+    <LineChart className="text-white" size={24} />
+  </div>
+);
+
 const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<AppTab>(AppTab.Dashboard);
   const [products, setProducts] = useState<BonusProduct[]>([]);
@@ -36,14 +46,58 @@ const App: React.FC = () => {
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [processingStatus, setProcessingStatus] = useState<string>('');
   const [viewMode, setViewMode] = useState<Record<string, 'summary' | 'products'>>({});
+  const [hasStudioKey, setHasStudioKey] = useState<boolean>(false);
+  const [manualApiKey, setManualApiKey] = useState<string>('');
+  const [isSavingKey, setIsSavingKey] = useState(false);
+  const [saveSuccess, setSaveSuccess] = useState(false);
 
   useEffect(() => {
     const savedProducts = localStorage.getItem('bonus_products');
     const savedHistory = localStorage.getItem('bonus_history');
+    const savedKey = localStorage.getItem('manual_api_key');
+    
     if (savedProducts) setProducts(JSON.parse(savedProducts));
     else setProducts(INITIAL_PRODUCTS);
+    
     if (savedHistory) setHistory(JSON.parse(savedHistory));
+    if (savedKey) setManualApiKey(savedKey);
+    
+    checkStudioKey();
   }, []);
+
+  const checkStudioKey = async () => {
+    if (window.aistudio) {
+      const selected = await window.aistudio.hasSelectedApiKey();
+      setHasStudioKey(selected);
+    }
+  };
+
+  const handleOpenStudioKey = async () => {
+    if (window.aistudio) {
+      await window.aistudio.openSelectKey();
+      setHasStudioKey(true);
+    }
+  };
+
+  const handleManualKeyChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setManualApiKey(e.target.value);
+    setSaveSuccess(false);
+  };
+
+  const handleSaveManualKey = () => {
+    if (!manualApiKey.trim()) {
+      alert("Por favor, insira uma chave de API válida.");
+      return;
+    }
+    
+    setIsSavingKey(true);
+    setTimeout(() => {
+      localStorage.setItem('manual_api_key', manualApiKey);
+      setIsSavingKey(false);
+      setSaveSuccess(true);
+      setTimeout(() => setSaveSuccess(false), 3000);
+    }, 800);
+  };
 
   useEffect(() => {
     localStorage.setItem('bonus_products', JSON.stringify(products));
@@ -78,6 +132,14 @@ const App: React.FC = () => {
 
   const processReports = async () => {
     if (selectedFiles.length === 0) return;
+    
+    const effectiveKey = hasStudioKey ? undefined : manualApiKey;
+    
+    if (!hasStudioKey && !manualApiKey) {
+      alert("Nenhuma chave de API detectada. Por favor, conecte-se via Google ou salve sua chave manualmente no Painel.");
+      return;
+    }
+
     setIsLoading(true);
     setProcessingStatus('Iniciando extração inteligente...');
     
@@ -88,41 +150,42 @@ const App: React.FC = () => {
       for (let i = 0; i < selectedFiles.length; i++) {
         const file = selectedFiles[i];
         setProcessingStatus(`Lendo arquivo ${i + 1}/${selectedFiles.length}: ${file.name}`);
-        const results = await processSalesReport(file, activeProds);
+        const results = await processSalesReport(file, activeProds, effectiveKey);
         
         results.forEach(newSeller => {
-          const name = newSeller.vendedor.trim().toUpperCase();
-          if (!consolidatedSellers[name]) {
-            consolidatedSellers[name] = {
-              vendedor: name,
+          // INDEXADOR ÚNICO: Código do Vendedor
+          const sellerCode = newSeller.codigoVendedor;
+          
+          if (!consolidatedSellers[sellerCode]) {
+            consolidatedSellers[sellerCode] = {
+              codigoVendedor: sellerCode,
+              vendedor: newSeller.vendedor,
               qtdePorBonus: {},
               vendasPorProduto: [],
               totalBonificacao: 0
             };
           }
           
-          consolidatedSellers[name].totalBonificacao += newSeller.totalBonificacao;
+          consolidatedSellers[sellerCode].totalBonificacao += newSeller.totalBonificacao;
           
-          // Merge quantities by normalizing bonus value string keys
           Object.entries(newSeller.qtdePorBonus).forEach(([bonusValStr, qty]) => {
             const normalizedKey = parseFloat(bonusValStr).toFixed(2);
-            consolidatedSellers[name].qtdePorBonus[normalizedKey as any] = 
-              (consolidatedSellers[name].qtdePorBonus[normalizedKey as any] || 0) + qty;
+            consolidatedSellers[sellerCode].qtdePorBonus[normalizedKey as any] = 
+              (consolidatedSellers[sellerCode].qtdePorBonus[normalizedKey as any] || 0) + (qty as number);
           });
 
-          // Merge product-specific quantities
           newSeller.vendasPorProduto.forEach(p => {
-            const existingProd = consolidatedSellers[name].vendasPorProduto.find(ep => ep.descricao === p.descricao);
+            const existingProd = consolidatedSellers[sellerCode].vendasPorProduto.find(ep => ep.descricao === p.descricao);
             if (existingProd) {
               existingProd.quantidade += p.quantidade;
             } else {
-              consolidatedSellers[name].vendasPorProduto.push({ ...p });
+              consolidatedSellers[sellerCode].vendasPorProduto.push({ ...p });
             }
           });
         });
       }
 
-      const allResults = Object.values(consolidatedSellers);
+      const allResults = Object.values(consolidatedSellers).sort((a, b) => Number(a.codigoVendedor) - Number(b.codigoVendedor));
       const totalBonificacao = allResults.reduce((acc, curr) => acc + curr.totalBonificacao, 0);
       
       const newHistoryItem: ProcessingHistoryItem = {
@@ -137,40 +200,36 @@ const App: React.FC = () => {
       setHistory([newHistoryItem, ...history]);
       setSelectedFiles([]);
       setActiveTab(AppTab.Dashboard);
-    } catch (error) {
+    } catch (error: any) {
       console.error(error);
-      alert('Erro ao processar relatórios. Verifique sua chave de API e a qualidade das imagens.');
+      alert('Erro ao processar relatórios. Verifique a chave de API ou a qualidade do documento.');
     } finally {
       setIsLoading(false);
       setProcessingStatus('');
     }
   };
 
-  const toggleViewMode = (itemId: string) => {
-    setViewMode(prev => ({
-      ...prev,
-      [itemId]: prev[itemId] === 'products' ? 'summary' : 'products'
-    }));
-  };
-
   const totalPagamentos = history.reduce((acc, curr) => acc + curr.totalBonificacao, 0);
   const totalProcessamentos = history.length;
-  const totalSellersUnique = new Set(history.flatMap(h => h.detalhes.map(d => d.vendedor))).size;
+  const totalSellersUnique = new Set(history.flatMap(h => h.detalhes.map(d => d.codigoVendedor))).size;
 
   const chartData = history.slice(0, 10).reverse().map(h => ({
     data: new Date(h.dataProcessamento).toLocaleDateString('pt-BR'),
     total: h.totalBonificacao
   }));
 
+  const isApiReady = hasStudioKey || (manualApiKey && manualApiKey.length > 20);
+
   return (
-    <div className="min-h-screen flex flex-col md:flex-row bg-[#f1f5f9]">
+    <div className="min-h-screen flex flex-col md:flex-row bg-[#f8fafc]">
       <aside className="w-full md:w-72 bg-white border-r border-slate-200 flex flex-col sticky top-0 h-auto md:h-screen">
         <div className="p-6 border-b border-slate-100">
           <div className="flex items-center gap-3">
-            <div className="bg-indigo-600 p-2 rounded-lg text-white">
-              <TrendingUp size={24} />
+            <LogoERP />
+            <div>
+              <h1 className="font-bold text-xl text-slate-800 leading-tight">ERP Bonus</h1>
+              <p className="text-sm font-medium text-slate-400">Sistema de Controle</p>
             </div>
-            <h1 className="font-bold text-xl text-slate-800 leading-tight">ERP Bonus<br/><span className="text-sm font-medium text-slate-400">Control System</span></h1>
           </div>
         </div>
         <nav className="flex-1 p-4 space-y-1">
@@ -189,10 +248,12 @@ const App: React.FC = () => {
         </nav>
         <div className="p-4 border-t border-slate-100 bg-slate-50">
           <div className="p-4 bg-white rounded-xl shadow-sm border border-slate-200">
-            <p className="text-xs text-slate-400 uppercase font-bold mb-1">Status do Sistema</p>
+            <p className="text-[10px] text-slate-400 uppercase font-bold mb-1">Status do Sistema</p>
             <div className="flex items-center gap-2">
-              <div className="w-2 h-2 bg-green-500 rounded-full"></div>
-              <p className="text-sm font-medium text-slate-600">IA Ativa & Calibrada</p>
+              <div className={`w-2 h-2 rounded-full ${isApiReady ? 'bg-green-500' : 'bg-red-500'}`}></div>
+              <p className="text-sm font-medium text-slate-600 truncate">
+                {hasStudioKey ? 'IA Conectada' : manualApiKey ? 'IA Manual Ativa' : 'IA Offline'}
+              </p>
             </div>
           </div>
         </div>
@@ -201,8 +262,8 @@ const App: React.FC = () => {
       <main className="flex-1 overflow-y-auto">
         <header className="bg-white/80 backdrop-blur-md sticky top-0 z-10 border-b border-slate-200 px-8 py-6 flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div>
-            <h2 className="text-2xl font-bold text-slate-800 capitalize">{TABS.find(t => t.id === activeTab)?.label}</h2>
-            <p className="text-sm text-slate-500 mt-1">Sincronizado com relatórios do ERP.</p>
+            <h2 className="text-2xl font-bold text-slate-800">{TABS.find(t => t.id === activeTab)?.label}</h2>
+            <p className="text-sm text-slate-500 mt-1">Gerencie as bonificações da Cerealista Sorocaba.</p>
           </div>
           <div className="flex items-center gap-3">
             {activeTab === AppTab.Configuracao && (
@@ -213,7 +274,7 @@ const App: React.FC = () => {
             {activeTab === AppTab.Processamento && (
               <button onClick={processReports} disabled={isLoading || selectedFiles.length === 0} className={`px-6 py-2.5 rounded-xl font-semibold flex items-center gap-2 transition-all shadow-lg ${isLoading || selectedFiles.length === 0 ? 'bg-slate-200 text-slate-500 cursor-not-allowed shadow-none' : 'bg-indigo-600 hover:bg-indigo-700 text-white shadow-indigo-100'}`}>
                 {isLoading ? <Loader2 className="animate-spin" size={18} /> : <FileUp size={18} />}
-                {isLoading ? 'Extraindo...' : 'Processar Agora'}
+                {isLoading ? 'Extraindo...' : 'Processar Relatórios'}
               </button>
             )}
           </div>
@@ -221,234 +282,134 @@ const App: React.FC = () => {
 
         <div className="p-8 max-w-7xl mx-auto">
           {activeTab === AppTab.Dashboard && (
-            <div className="space-y-8 animate-in fade-in duration-500">
+            <div className="space-y-8">
               <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                 <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 flex items-center gap-5">
-                  <div className="bg-blue-50 text-blue-600 p-4 rounded-xl"><DollarSign size={28} /></div>
+                  <div className="bg-indigo-50 text-indigo-600 p-4 rounded-xl"><DollarSign size={28} /></div>
                   <div>
-                    <p className="text-sm font-medium text-slate-500">Total Acumulado</p>
+                    <p className="text-sm font-medium text-slate-500">Bonificação Acumulada</p>
                     <p className="text-2xl font-bold text-slate-900">R$ {totalPagamentos.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</p>
                   </div>
                 </div>
                 <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 flex items-center gap-5">
                   <div className="bg-indigo-50 text-indigo-600 p-4 rounded-xl"><Users size={28} /></div>
                   <div>
-                    <p className="text-sm font-medium text-slate-500">Equipe Bonificada</p>
+                    <p className="text-sm font-medium text-slate-500">Vendedores Ativos</p>
                     <p className="text-2xl font-bold text-slate-900">{totalSellersUnique}</p>
                   </div>
                 </div>
                 <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 flex items-center gap-5">
-                  <div className="bg-emerald-50 text-emerald-600 p-4 rounded-xl"><FileSearch size={28} /></div>
+                  <div className="bg-indigo-50 text-indigo-600 p-4 rounded-xl"><FileSearch size={28} /></div>
                   <div>
-                    <p className="text-sm font-medium text-slate-500">Arquivos Processados</p>
+                    <p className="text-sm font-medium text-slate-500">Relatórios Analisados</p>
                     <p className="text-2xl font-bold text-slate-900">{totalProcessamentos}</p>
                   </div>
                 </div>
               </div>
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
-                  <h3 className="font-bold text-slate-800 mb-6">Volume de Pagamentos</h3>
-                  <div className="h-64">
-                    {history.length > 0 ? (
-                      <ResponsiveContainer width="100%" height="100%">
-                        <BarChart data={chartData}>
-                          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                          <XAxis dataKey="data" stroke="#94a3b8" fontSize={12} tickLine={false} axisLine={false} />
-                          <YAxis stroke="#94a3b8" fontSize={12} tickLine={false} axisLine={false} />
-                          <Tooltip contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }} formatter={(value: number) => `R$ ${value.toFixed(2)}`} />
-                          <Bar dataKey="total" radius={[6, 6, 0, 0]}>
-                            {chartData.map((entry, index) => (
-                              <Cell key={`cell-${index}`} fill={index === chartData.length - 1 ? '#4f46e5' : '#c7d2fe'} />
-                            ))}
-                          </Bar>
-                        </BarChart>
-                      </ResponsiveContainer>
-                    ) : <div className="flex items-center justify-center h-full bg-slate-50 rounded-xl border border-dashed border-slate-200"><p className="text-slate-400 text-sm">Aguardando dados.</p></div>}
-                  </div>
-                </div>
-                <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
-                  <div className="flex items-center justify-between mb-6">
-                    <h3 className="font-bold text-slate-800">Processamentos Recentes</h3>
-                    <button onClick={() => setActiveTab(AppTab.Historico)} className="text-indigo-600 text-sm font-semibold hover:underline">Ver Histórico</button>
-                  </div>
-                  <div className="space-y-4">
-                    {history.length > 0 ? history.slice(0, 4).map((item) => (
-                      <div key={item.id} className="flex items-center justify-between p-4 bg-slate-50 rounded-xl border border-slate-100 hover:bg-white hover:shadow-sm transition-all cursor-pointer group">
-                        <div className="flex items-center gap-4">
-                          <div className="bg-white p-2.5 rounded-lg border border-slate-200 text-slate-400 group-hover:text-indigo-500 transition-colors"><CheckCircle2 size={20} /></div>
-                          <div>
-                            <p className="text-sm font-semibold text-slate-700 truncate max-w-[180px]">{item.arquivoOrigem}</p>
-                            <p className="text-xs text-slate-400">{new Date(item.dataProcessamento).toLocaleDateString('pt-BR')}</p>
-                          </div>
-                        </div>
-                        <div className="text-right">
-                          <p className="text-sm font-bold text-slate-900">R$ {item.totalBonificacao.toFixed(2)}</p>
-                          <p className="text-xs text-slate-400">{item.totalVendedores} vended.</p>
-                        </div>
-                      </div>
-                    )) : <div className="text-center py-10 text-slate-400 italic">Sem registros.</div>}
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
 
-          {activeTab === AppTab.Configuracao && (
-            <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden animate-in fade-in slide-in-from-bottom-4 duration-500">
-              <div className="p-6 bg-slate-50 border-b border-slate-100 flex items-center justify-between">
-                <p className="text-sm font-semibold text-slate-500 uppercase tracking-wider">Base de Produtos Bonificáveis</p>
-                <span className="bg-indigo-100 text-indigo-700 text-xs px-2.5 py-1 rounded-full font-bold">{products.length} itens</span>
-              </div>
-              <table className="w-full text-left">
-                <thead>
-                  <tr className="border-b border-slate-100">
-                    <th className="px-6 py-4 text-xs font-bold text-slate-400 uppercase">Código ERP</th>
-                    <th className="px-6 py-4 text-xs font-bold text-slate-400 uppercase">Descrição do Produto</th>
-                    <th className="px-6 py-4 text-xs font-bold text-slate-400 uppercase">Bonificação (R$)</th>
-                    <th className="px-6 py-4 text-xs font-bold text-slate-400 uppercase text-center">Status</th>
-                    <th className="px-6 py-4 text-xs font-bold text-slate-400 uppercase text-right">Ações</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-50">
-                  {products.map((p) => (
-                    <tr key={p.id} className="hover:bg-slate-50/50 transition-colors group">
-                      <td className="px-6 py-4"><input type="text" value={p.codigo} onChange={(e) => updateProduct(p.id, { codigo: e.target.value })} className="bg-transparent border-none focus:ring-2 focus:ring-indigo-500/20 rounded px-2 py-1 w-full font-mono text-sm text-slate-700" placeholder="Ex: 789..." /></td>
-                      <td className="px-6 py-4"><input type="text" value={p.descricao} onChange={(e) => updateProduct(p.id, { descricao: e.target.value })} className="bg-transparent border-none focus:ring-2 focus:ring-indigo-500/20 rounded px-2 py-1 w-full text-sm text-slate-700" placeholder="Descrição..." /></td>
-                      <td className="px-6 py-4">
-                        <div className="flex items-center gap-1 bg-white border border-slate-200 rounded-lg px-3 py-1.5 w-max shadow-sm">
-                          <span className="text-xs text-slate-400 font-bold">R$</span>
-                          <input type="number" step="0.01" value={p.valorBonificacao} onChange={(e) => updateProduct(p.id, { valorBonificacao: parseFloat(e.target.value) || 0 })} className="bg-transparent border-none focus:outline-none w-16 text-sm font-bold text-slate-700" />
-                        </div>
-                      </td>
-                      <td className="px-6 py-4 text-center">
-                        <button onClick={() => updateProduct(p.id, { ativo: !p.ativo })} className={`px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-widest transition-all ${p.ativo ? 'bg-emerald-100 text-emerald-700 border border-emerald-200' : 'bg-slate-100 text-slate-400 border border-slate-200'}`}>{p.ativo ? 'Ativo' : 'Inativo'}</button>
-                      </td>
-                      <td className="px-6 py-4 text-right">
-                        <button onClick={() => removeProduct(p.id)} className="text-slate-300 hover:text-red-500 p-2 transition-colors opacity-0 group-hover:opacity-100"><Trash2 size={18} /></button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-
-          {activeTab === AppTab.Processamento && (
-            <div className="max-w-3xl mx-auto animate-in zoom-in-95 duration-300">
-              <div className="bg-white p-8 rounded-3xl shadow-sm border border-slate-100">
-                <div className="text-center mb-10">
-                  <div className="inline-flex items-center justify-center w-20 h-20 bg-indigo-50 text-indigo-600 rounded-3xl mb-6 ring-8 ring-indigo-50/50"><FileUp size={40} /></div>
-                  <h3 className="text-2xl font-bold text-slate-800">Carregar Relatórios ERP</h3>
-                  <p className="text-slate-500 mt-2 max-w-sm mx-auto">Nossa IA está configurada para ignorar pontos decimais (ex: 1.000 = 1 unidade) e capturar todos os itens bonificados configurados.</p>
+              <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
+                <div className="p-6 bg-slate-50 border-b border-slate-100 flex items-center justify-between">
+                   <div className="flex items-center gap-3">
+                      <Key className="text-indigo-600" size={24} />
+                      <h3 className="font-bold text-slate-800">Conectar Inteligência Artificial</h3>
+                   </div>
+                   {!isApiReady && <span className="text-xs bg-red-100 text-red-600 px-3 py-1 rounded-full font-bold">REQUER CHAVE</span>}
                 </div>
-                <div className="relative group">
-                  <input type="file" multiple onChange={handleFileChange} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" accept="image/*,.pdf" />
-                  <div className={`p-10 border-2 border-dashed rounded-2xl text-center transition-all ${selectedFiles.length > 0 ? 'border-indigo-400 bg-indigo-50/50' : 'border-slate-200 hover:border-slate-300 bg-slate-50/50'}`}>
-                    {selectedFiles.length > 0 ? (
-                      <div className="space-y-4">
-                        <div className="flex flex-wrap justify-center gap-2">
-                          {selectedFiles.map((file, i) => <span key={i} className="px-3 py-1 bg-white border border-indigo-100 text-indigo-600 text-xs font-semibold rounded-lg shadow-sm">{file.name}</span>)}
-                        </div>
-                        <p className="text-sm font-bold text-indigo-700">{selectedFiles.length} arquivos prontos</p>
+                <div className="p-8 grid grid-cols-1 lg:grid-cols-2 gap-8">
+                   <div className="space-y-4">
+                      <label className="block text-sm font-bold text-slate-700">Opção 1: Conectar via Google</label>
+                      <button onClick={handleOpenStudioKey} className={`w-full py-3 rounded-xl font-bold flex items-center justify-center gap-2 transition-all ${hasStudioKey ? 'bg-green-50 text-green-600 border border-green-200' : 'bg-indigo-600 text-white hover:bg-indigo-700 shadow-lg shadow-indigo-100'}`}>
+                         {hasStudioKey ? <CheckCircle2 size={18} /> : <Key size={18} />}
+                         {hasStudioKey ? 'Conectado via Studio' : 'Vincular API Key do Google'}
+                      </button>
+                   </div>
+                   <div className="space-y-4 lg:border-l border-slate-100 lg:pl-8">
+                      <label className="block text-sm font-bold text-slate-700">Opção 2: Colar Manualmente</label>
+                      <div className="flex gap-2">
+                        <input 
+                          type="password" 
+                          value={manualApiKey} 
+                          onChange={handleManualKeyChange}
+                          className="flex-1 bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all font-mono"
+                          placeholder="Cole sua chave aqui..."
+                        />
+                        <button 
+                          onClick={handleSaveManualKey}
+                          disabled={isSavingKey}
+                          className={`px-4 rounded-xl font-bold flex items-center justify-center gap-2 transition-all min-w-[120px] ${
+                            saveSuccess ? 'bg-green-600 text-white' : 'bg-indigo-600 text-white hover:bg-indigo-700 shadow-lg shadow-indigo-100'
+                          }`}
+                        >
+                          {isSavingKey ? <Loader2 className="animate-spin" size={18} /> : saveSuccess ? <Check size={18} /> : <Save size={18} />}
+                          {saveSuccess ? 'Salvo!' : 'Salvar'}
+                        </button>
                       </div>
-                    ) : (
-                      <>
-                        <div className="bg-white w-12 h-12 rounded-xl flex items-center justify-center mx-auto mb-4 shadow-sm border border-slate-100 group-hover:scale-110 transition-transform"><Plus size={24} className="text-indigo-600" /></div>
-                        <p className="text-sm font-bold text-slate-700">Clique para selecionar</p>
-                        <p className="text-xs text-slate-400 mt-1">Imagens ou PDFs do ERP</p>
-                      </>
-                    )}
-                  </div>
+                      <a href="https://aistudio.google.com/app/apikey" target="_blank" className="text-[10px] text-indigo-600 font-bold hover:underline flex items-center gap-1">
+                         Criar nova chave (Google AI Studio) <ExternalLink size={10} />
+                      </a>
+                   </div>
                 </div>
-                {isLoading && (
-                  <div className="mt-8 bg-indigo-50/80 backdrop-blur rounded-2xl p-6 border border-indigo-100 space-y-4">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-3"><Loader2 className="animate-spin text-indigo-600" size={20} /><p className="text-sm font-bold text-indigo-800">Sincronizando com IA...</p></div>
-                      <span className="text-xs font-mono text-indigo-600 font-bold">GEMINI 3 PRO</span>
-                    </div>
-                    <p className="text-sm text-indigo-600/80 font-medium italic">{processingStatus}</p>
-                    <div className="w-full bg-indigo-200/50 rounded-full h-2 overflow-hidden"><div className="bg-indigo-600 h-full animate-progress-indeterminate w-1/3 rounded-full"></div></div>
-                  </div>
-                )}
               </div>
             </div>
           )}
 
           {activeTab === AppTab.Historico && (
-            <div className="space-y-6 animate-in fade-in slide-in-from-right-4 duration-500">
+            <div className="space-y-6">
               {history.length > 0 ? history.map((item) => {
                 const isProductsView = viewMode[item.id] === 'products';
-                // Get all unique products found in this processing run for the detailed view headers
                 const allProductDescriptions = Array.from(new Set(item.detalhes.flatMap(d => d.vendasPorProduto.map(v => v.descricao)))).sort();
 
                 return (
                   <div key={item.id} className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
-                    <div className="p-6 bg-slate-50/50 border-b border-slate-100 flex flex-col md:flex-row md:items-center justify-between gap-4">
+                    <div className="p-6 bg-slate-50 border-b border-slate-100 flex flex-col md:flex-row md:items-center justify-between gap-4">
                       <div className="flex items-center gap-4">
-                        <div className="bg-white p-3 rounded-xl border border-slate-200 text-emerald-600 shadow-sm"><CheckCircle2 size={24} /></div>
+                        <div className="bg-white p-3 rounded-xl border border-slate-200 text-indigo-600 shadow-sm"><CheckCircle2 size={24} /></div>
                         <div>
-                          <p className="text-sm text-slate-400 font-bold uppercase tracking-wider">Extração Realizada em</p>
+                          <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">Processamento Finalizado</p>
                           <h4 className="font-bold text-slate-800">{new Date(item.dataProcessamento).toLocaleString('pt-BR')}</h4>
                         </div>
                       </div>
-                      <div className="flex flex-wrap items-center gap-4">
-                        <div className="flex bg-white border border-slate-200 rounded-xl p-1 shadow-sm">
-                          <button 
-                            onClick={() => toggleViewMode(item.id)}
-                            className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${!isProductsView ? 'bg-indigo-600 text-white shadow-md shadow-indigo-100' : 'text-slate-400 hover:text-slate-600'}`}
-                          >
-                            <LayoutGrid size={14} /> Sumário
-                          </button>
-                          <button 
-                            onClick={() => toggleViewMode(item.id)}
-                            className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${isProductsView ? 'bg-indigo-600 text-white shadow-md shadow-indigo-100' : 'text-slate-400 hover:text-slate-600'}`}
-                          >
-                            <ClipboardList size={14} /> Detalhado
-                          </button>
+                      <div className="flex items-center gap-4">
+                        <div className="flex bg-white border border-slate-200 rounded-xl p-1">
+                          <button onClick={() => setViewMode({...viewMode, [item.id]: 'summary'})} className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${!isProductsView ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-slate-600'}`}>Resumo</button>
+                          <button onClick={() => setViewMode({...viewMode, [item.id]: 'products'})} className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${isProductsView ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-slate-600'}`}>Detalhado</button>
                         </div>
-                        <div className="h-10 w-[1px] bg-slate-200 mx-2 hidden md:block"></div>
-                        <div className="text-right">
-                          <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Total Bonificado</p>
-                          <p className="font-bold text-indigo-600 text-lg">R$ {item.totalBonificacao.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</p>
+                        <div className="text-right px-4">
+                          <p className="text-[10px] text-slate-400 font-bold uppercase">Total Bônus</p>
+                          <p className="font-bold text-indigo-600">R$ {item.totalBonificacao.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</p>
                         </div>
                         <button onClick={() => {
-                          const csvContent = "data:text/csv;charset=utf-8,Vendedor,Bonificacao Total\n" + item.detalhes.map(d => `${d.vendedor},${d.totalBonificacao.toFixed(2)}`).join("\n");
+                          const csvContent = "data:text/csv;charset=utf-8,Codigo,Vendedor,Bonificacao Total\n" + item.detalhes.map(d => `${d.codigoVendedor},${d.vendedor},${d.totalBonificacao.toFixed(2)}`).join("\n");
                           const link = document.createElement("a");
                           link.setAttribute("href", encodeURI(csvContent));
-                          link.setAttribute("download", `relatorio_${item.id}.csv`);
+                          link.setAttribute("download", `extracao_${item.id}.csv`);
                           document.body.appendChild(link);
                           link.click();
-                        }} className="bg-white border border-slate-200 p-2.5 rounded-xl hover:bg-slate-50 transition-colors text-slate-500"><Download size={20} /></button>
+                        }} className="bg-white border border-slate-200 p-2.5 rounded-xl hover:bg-slate-50 text-slate-500"><Download size={20} /></button>
                       </div>
                     </div>
 
                     <div className="p-0 overflow-x-auto">
                       {!isProductsView ? (
                         <table className="w-full text-left min-w-[600px]">
-                          <thead className="bg-slate-50/30">
+                          <thead className="bg-slate-50/50">
                             <tr>
-                              <th className="px-8 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Nome do Vendedor</th>
-                              <th className="px-8 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Detalhamento das Quantidades</th>
-                              <th className="px-8 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Bonificação Total</th>
+                              <th className="px-8 py-3 text-[10px] font-bold text-slate-400 uppercase">Vendedor</th>
+                              <th className="px-8 py-3 text-[10px] font-bold text-slate-400 uppercase">Bonificações</th>
+                              <th className="px-8 py-3 text-[10px] font-bold text-slate-400 uppercase text-right">Valor Total</th>
                             </tr>
                           </thead>
-                          <tbody className="divide-y divide-slate-50">
-                            {/* Explicitly typing 'det' to resolve the 'unknown' error on 'vendedor.split' */}
+                          <tbody className="divide-y divide-slate-100">
                             {item.detalhes.map((det: SellerBonusSummary, idx: number) => (
-                              <tr key={idx} className="hover:bg-indigo-50/20 transition-colors">
-                                <td className="px-8 py-4 flex items-center gap-3">
-                                  <div className="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center text-[10px] font-bold text-slate-400">
-                                    {(det.vendedor || '').split(' ').map((n: string) => n[0]).join('').substring(0, 2)}
-                                  </div>
-                                  <span className="font-semibold text-slate-700 text-sm uppercase">{det.vendedor}</span>
+                              <tr key={idx} className="hover:bg-indigo-50/20">
+                                <td className="px-8 py-4">
+                                  <span className="font-semibold text-slate-700 text-sm">{det.codigoVendedor} - {det.vendedor}</span>
                                 </td>
                                 <td className="px-8 py-4">
                                   <div className="flex gap-2 flex-wrap">
                                     {Object.entries(det.qtdePorBonus).map(([val, qty]) => (
-                                      <span key={val} className="px-3 py-1 bg-white border border-slate-200 rounded-lg text-xs font-medium text-slate-600 shadow-sm flex items-center gap-1.5">
-                                        <span className="font-bold text-indigo-700 bg-indigo-50 px-1.5 py-0.5 rounded">{qty}x</span>
-                                        <span>de</span>
-                                        <span className="font-bold">R$ {parseFloat(val).toFixed(2)}</span>
+                                      <span key={val} className="px-2 py-1 bg-white border border-slate-200 rounded-lg text-xs font-medium text-slate-600 shadow-sm">
+                                        <span className="font-bold text-indigo-700">{qty}x</span> R$ {parseFloat(val).toFixed(2)}
                                       </span>
                                     ))}
                                   </div>
@@ -464,20 +425,19 @@ const App: React.FC = () => {
                         <table className="w-full text-left border-collapse min-w-[800px]">
                           <thead className="bg-slate-100">
                             <tr>
-                              <th className="px-6 py-3 border border-slate-200 text-[10px] font-bold text-slate-500 uppercase">Vendedor</th>
+                              <th className="px-4 py-3 border border-slate-200 text-[10px] font-bold text-slate-500 uppercase">Cód - Vendedor</th>
                               {allProductDescriptions.map((desc, i) => (
-                                <th key={i} className="px-4 py-3 border border-slate-200 text-[9px] font-bold text-slate-500 uppercase text-center max-w-[120px] truncate" title={desc}>
-                                  {desc.split(' ').slice(0, 2).join(' ')}
+                                <th key={i} className="px-4 py-3 border border-slate-200 text-[9px] font-bold text-slate-500 uppercase text-center max-w-[100px] truncate" title={desc}>
+                                  {String(desc).split(' ').slice(0, 2).join(' ')}
                                 </th>
                               ))}
-                              <th className="px-6 py-3 border border-slate-200 text-[10px] font-bold text-slate-500 uppercase text-right">Total</th>
+                              <th className="px-4 py-3 border border-slate-200 text-[10px] font-bold text-slate-500 uppercase text-right">Total</th>
                             </tr>
                           </thead>
                           <tbody>
-                            {/* Explicitly typing 'det' to ensure consistent behavior across view modes */}
                             {item.detalhes.map((det: SellerBonusSummary, idx: number) => (
-                              <tr key={idx} className="hover:bg-indigo-50/10 transition-colors">
-                                <td className="px-6 py-3 border border-slate-200 text-xs font-semibold text-slate-700 whitespace-nowrap">{det.vendedor}</td>
+                              <tr key={idx} className="hover:bg-slate-50">
+                                <td className="px-4 py-3 border border-slate-200 text-xs font-semibold text-slate-700 whitespace-nowrap">{det.codigoVendedor} - {det.vendedor}</td>
                                 {allProductDescriptions.map((desc, i) => {
                                   const qty = det.vendasPorProduto.find(v => v.descricao === desc)?.quantidade || 0;
                                   return (
@@ -486,32 +446,78 @@ const App: React.FC = () => {
                                     </td>
                                   );
                                 })}
-                                <td className="px-6 py-3 border border-slate-200 text-right font-bold text-slate-900 text-xs whitespace-nowrap">
+                                <td className="px-4 py-3 border border-slate-200 text-right font-bold text-slate-900 text-xs whitespace-nowrap">
                                   R$ {det.totalBonificacao.toFixed(2)}
                                 </td>
                               </tr>
                             ))}
-                            <tr className="bg-slate-50 font-bold">
-                              <td className="px-6 py-3 border border-slate-200 text-xs uppercase text-slate-500">SOMA TOTAL</td>
-                              {allProductDescriptions.map((desc, i) => {
-                                const totalQty = item.detalhes.reduce((acc, curr) => acc + (curr.vendasPorProduto.find(v => v.descricao === desc)?.quantidade || 0), 0);
-                                return (
-                                  <td key={i} className="px-4 py-3 border border-slate-200 text-center text-sm text-indigo-700">
-                                    {totalQty}
-                                  </td>
-                                );
-                              })}
-                              <td className="px-6 py-3 border border-slate-200 text-right text-indigo-800 text-sm">
-                                R$ {item.totalBonificacao.toFixed(2)}
-                              </td>
-                            </tr>
                           </tbody>
                         </table>
                       )}
                     </div>
                   </div>
                 );
-              }) : <div className="bg-white p-20 rounded-3xl shadow-sm border border-slate-100 text-center"><History size={32} className="text-slate-300 mx-auto mb-6" /><p className="text-slate-500">Sem histórico de processamento.</p></div>}
+              }) : <div className="bg-white p-20 rounded-3xl shadow-sm border border-slate-100 text-center"><History size={32} className="text-slate-300 mx-auto mb-4" /><p className="text-slate-500">O histórico de extrações aparecerá aqui.</p></div>}
+            </div>
+          )}
+
+          {activeTab === AppTab.Configuracao && (
+            <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
+              <div className="p-6 bg-slate-50 border-b border-slate-100 flex items-center justify-between">
+                <p className="text-sm font-semibold text-slate-500 uppercase tracking-wider">Produtos e Valores de Bônus</p>
+                <span className="bg-indigo-100 text-indigo-700 text-xs px-2.5 py-1 rounded-full font-bold">{products.length} itens</span>
+              </div>
+              <table className="w-full text-left">
+                <thead>
+                  <tr className="border-b border-slate-100">
+                    <th className="px-6 py-4 text-xs font-bold text-slate-400 uppercase">Código</th>
+                    <th className="px-6 py-4 text-xs font-bold text-slate-400 uppercase">Descrição</th>
+                    <th className="px-6 py-4 text-xs font-bold text-slate-400 uppercase">Bônus (R$)</th>
+                    <th className="px-6 py-4 text-xs font-bold text-slate-400 uppercase text-center">Status</th>
+                    <th className="px-6 py-4 text-xs font-bold text-slate-400 uppercase text-right">Ações</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-50">
+                  {products.map((p) => (
+                    <tr key={p.id} className="hover:bg-slate-50/50 transition-colors group">
+                      <td className="px-6 py-4"><input type="text" value={p.codigo} onChange={(e) => updateProduct(p.id, { codigo: e.target.value })} className="bg-transparent border-none focus:ring-0 rounded px-1 py-1 w-full font-mono text-xs text-slate-700" placeholder="Código..." /></td>
+                      <td className="px-6 py-4"><input type="text" value={p.descricao} onChange={(e) => updateProduct(p.id, { descricao: e.target.value })} className="bg-transparent border-none focus:ring-0 rounded px-1 py-1 w-full text-xs text-slate-700" placeholder="Descrição..." /></td>
+                      <td className="px-6 py-4">
+                        <div className="flex items-center gap-1 text-xs font-bold text-slate-700">R$ <input type="number" step="0.01" value={p.valorBonificacao} onChange={(e) => updateProduct(p.id, { valorBonificacao: parseFloat(e.target.value) || 0 })} className="bg-transparent border-none focus:ring-0 w-16" /></div>
+                      </td>
+                      <td className="px-6 py-4 text-center">
+                        <button onClick={() => updateProduct(p.id, { ativo: !p.ativo })} className={`px-3 py-1 rounded-full text-[10px] font-bold uppercase transition-all ${p.ativo ? 'bg-indigo-100 text-indigo-700' : 'bg-slate-100 text-slate-400'}`}>{p.ativo ? 'Ativo' : 'Inativo'}</button>
+                      </td>
+                      <td className="px-6 py-4 text-right">
+                        <button onClick={() => removeProduct(p.id)} className="text-slate-300 hover:text-red-500 p-2 opacity-0 group-hover:opacity-100 transition-opacity"><Trash2 size={16} /></button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {activeTab === AppTab.Processamento && (
+            <div className="max-w-2xl mx-auto">
+              <div className="bg-white p-10 rounded-3xl shadow-sm border border-slate-100">
+                <div className="text-center mb-10">
+                  <div className="inline-flex items-center justify-center w-20 h-20 bg-indigo-50 text-indigo-600 rounded-2xl mb-6"><FileUp size={40} /></div>
+                  <h3 className="text-2xl font-bold text-slate-800">Processar Relatórios ERP</h3>
+                </div>
+                <div className="relative group">
+                  <input type="file" multiple onChange={handleFileChange} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" accept="image/*,.pdf" />
+                  <div className={`p-10 border-2 border-dashed rounded-2xl text-center ${selectedFiles.length > 0 ? 'border-indigo-400 bg-indigo-50/50' : 'border-slate-200 bg-slate-50/50'}`}>
+                    {selectedFiles.length > 0 ? <p className="text-sm font-bold text-indigo-700">{selectedFiles.length} arquivos prontos</p> : <p className="text-sm font-bold text-slate-700">Clique para anexar arquivos</p>}
+                  </div>
+                </div>
+                {isLoading && (
+                  <div className="mt-8 bg-indigo-50 rounded-2xl p-6 border border-indigo-100 space-y-4">
+                    <p className="text-sm text-indigo-600/80 font-medium italic">{processingStatus}</p>
+                    <div className="w-full bg-indigo-200/50 rounded-full h-2 overflow-hidden"><div className="bg-indigo-600 h-full animate-progress-indeterminate w-1/3 rounded-full"></div></div>
+                  </div>
+                )}
+              </div>
             </div>
           )}
         </div>
